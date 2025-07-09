@@ -31,6 +31,7 @@ class Faroswap:
         self.WBTC_CONTRACT_ADDRESS = "0x8275c526d1bCEc59a31d673929d3cE8d108fF5c7"
         self.MIXSWAP_ROUTER_ADDRESS = "0x3541423f25A1Ca5C98fdBCf478405d3f0aaD1164"
         self.DVM_ROUTER_ADDRESS = "0x4b177AdEd3b8bD1D5D747F91B9E853513838Cd49"
+        self.POOL_ROUTER_ADDRESS = "0x73cafc894dbfc181398264934f7be4e482fc9d40"
         self.TICKERS = [
             "PHRS", 
             "WPHRS", 
@@ -71,7 +72,6 @@ class Faroswap:
         self.proxies = []
         self.proxy_index = 0
         self.account_proxies = {}
-        self.access_tokens = {}
         self.dp_or_wd_option = None
         self.deposit_amount = 0
         self.withdraw_amount = 0
@@ -119,6 +119,21 @@ class Faroswap:
         hours, remainder = divmod(seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
+    
+    def load_pools(self):
+        filename = "pools.json"
+        try:
+            if not os.path.exists(filename):
+                self.log(f"{Fore.RED}File {filename} Not Found.{Style.RESET_ALL}")
+                return
+
+            with open(filename, 'r') as file:
+                data = json.load(file)
+                if isinstance(data, list):
+                    return data
+                return []
+        except json.JSONDecodeError:
+            return []
     
     async def load_proxies(self, use_proxy_choice: int):
         filename = "proxy.txt"
@@ -462,19 +477,21 @@ class Faroswap:
             if not dodo_route:
                 return None, None
 
-            router = dodo_route.get("data", {}).get("to")
             value = dodo_route.get("data", {}).get("value")
             calldata = dodo_route.get("data", {}).get("data")
-            gas_limit = int(dodo_route.get("data", {}).get("gasLimit", 500000))
+            gas_limit = dodo_route.get("data", {}).get("gasLimit", 300000)
 
-            gas_price = web3.to_wei(1, "gwei")
+            max_priority_fee = web3.to_wei(1, "gwei")
+            max_fee = max_priority_fee
 
             swap_tx = {
-                "to": web3.to_checksum_address(router),
-                "value": int(value),
+                "to": self.MIXSWAP_ROUTER_ADDRESS,
+                "from": address,
                 "data": calldata,
+                "value": int(value),
                 "gas": int(gas_limit),
-                "gasPrice": int(gas_price),
+                "maxFeePerGas": int(max_fee),
+                "maxPriorityFeePerGas": int(max_priority_fee),
                 "nonce": web3.eth.get_transaction_count(address, "pending"),
                 "chainId": web3.eth.chain_id,
             }
@@ -493,24 +510,17 @@ class Faroswap:
             )
             return None, None
         
-    async def perform_add_dvm_liquidity(self, account: str, address: str, base_token: str, quote_token: str, amount: float, use_proxy: bool):
+    async def perform_add_dvm_liquidity(self, account: str, address: str, pair_address: str, base_token: str, quote_token: str, amount: float, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
-
-            pair_address = (
-                "0x701663690d6a240e21a81e2d9002f55296ac8732" if base_token == self.USDC_CONTRACT_ADDRESS else 
-                "0x633d8A492cf59b47F36eb8ef0F739D4FF5cE9af9"
-            )
-
-            pool_address = "0x73cafc894dbfc181398264934f7be4e482fc9d40"
 
             dvm_address = web3.to_checksum_address(pair_address)
             in_amount = int(amount * (10 ** 6))
             min_amount = int(in_amount * (1 - 0.1 / 100))
             deadline = int(time.time()) + 600
 
-            await self.approving_token(account, address, pool_address, base_token, in_amount, use_proxy)
-            await self.approving_token(account, address, pool_address, quote_token, in_amount, use_proxy)
+            await self.approving_token(account, address, self.POOL_ROUTER_ADDRESS, base_token, in_amount, use_proxy)
+            await self.approving_token(account, address, self.POOL_ROUTER_ADDRESS, quote_token, in_amount, use_proxy)
 
             token_contract = web3.eth.contract(address=web3.to_checksum_address(self.DVM_ROUTER_ADDRESS), abi=self.UNISWAP_V2_CONTRACT_ABI)
 
@@ -671,27 +681,27 @@ class Faroswap:
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
         
-        while True:
-            try:
-                amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter WETH Amount for Each Swap Tx [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
-                if amount > 0:
-                    self.weth_swap_amount = amount
-                    break
-                else:
-                    print(f"{Fore.RED + Style.BRIGHT}WETH Amount must be greater than 0.{Style.RESET_ALL}")
-            except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+        # while True:
+        #     try:
+        #         amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter WETH Amount for Each Swap Tx [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+        #         if amount > 0:
+        #             self.weth_swap_amount = amount
+        #             break
+        #         else:
+        #             print(f"{Fore.RED + Style.BRIGHT}WETH Amount must be greater than 0.{Style.RESET_ALL}")
+        #     except ValueError:
+        #         print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
         
-        while True:
-            try:
-                amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter WBTC Amount for Each Swap Tx [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
-                if amount > 0:
-                    self.wbtc_swap_amount = amount
-                    break
-                else:
-                    print(f"{Fore.RED + Style.BRIGHT}WBTC Amount must be greater than 0.{Style.RESET_ALL}")
-            except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+        # while True:
+        #     try:
+        #         amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter WBTC Amount for Each Swap Tx [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+        #         if amount > 0:
+        #             self.wbtc_swap_amount = amount
+        #             break
+        #         else:
+        #             print(f"{Fore.RED + Style.BRIGHT}WBTC Amount must be greater than 0.{Style.RESET_ALL}")
+        #     except ValueError:
+        #         print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
 
     def print_add_lp_question(self):
         while True:
@@ -825,7 +835,7 @@ class Faroswap:
             url = (
                 f"https://api.dodoex.io/route-service/v2/widget/getdodoroute?chainId=688688&deadLine={deadline}"
                 f"&apikey=a37546505892e1a952&slippage=3.225&source=dodoV2AndMixWasm&toTokenAddress={to_token}"
-                f"&fromTokenAddress={from_token}&userAddr={address}&estimateGas=false&fromAmount={amount}"
+                f"&fromTokenAddress={from_token}&userAddr={address}&estimateGas=true&fromAmount={amount}"
             )
             proxy = self.get_next_proxy_for_account(address) if use_proxy else None
             connector = ProxyConnector.from_url(proxy) if use_proxy else None
@@ -931,8 +941,8 @@ class Faroswap:
                 f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
             )
 
-    async def process_perform_add_dvm_liquidity(self, account: str, address: str, base_token: str, quote_token: str, amount: float, use_proxy: bool):
-        tx_hash, block_number = await self.perform_add_dvm_liquidity(account, address, base_token, quote_token, amount, use_proxy)
+    async def process_perform_add_dvm_liquidity(self, account: str, address: str, pair_address: str, base_token: str, quote_token: str, amount: float, use_proxy: bool):
+        tx_hash, block_number = await self.perform_add_dvm_liquidity(account, address, pair_address, base_token, quote_token, amount, use_proxy)
         if tx_hash and block_number:
             explorer = f"https://testnet.pharosscan.xyz/tx/{tx_hash}"
 
@@ -1103,8 +1113,20 @@ class Faroswap:
                     f"{Fore.YELLOW+Style.BRIGHT} Insufficient {quote_ticker} Token Balance {Style.RESET_ALL}"
                 )
                 continue
+
+            pair_address = (
+                self.pools[0]["USDC_USDT"] if base_ticker == "USDC" else
+                self.pools[0]["USDT_USDC"]
+            )
+
+            if not pair_address:
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}     Status  :{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} Pool Address Not Found in pools.json {Style.RESET_ALL}"
+                )
+                break
             
-            await self.process_perform_add_dvm_liquidity(account, address, base_token, quote_token, amount, use_proxy)
+            await self.process_perform_add_dvm_liquidity(account, address, pair_address, base_token, quote_token, amount, use_proxy)
             await self.print_timer()
         
     async def process_accounts(self, account: str, address: str, option: int, use_proxy: bool):
@@ -1143,6 +1165,8 @@ class Faroswap:
                 accounts = [line.strip() for line in file if line.strip()]
             
             option, use_proxy_choice = self.print_question()
+
+            self.pools = self.load_pools()
 
             while True:
                 use_proxy = False
